@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pbg-pysces"
+version = "0.1.0"
+description = "Process-bigraph wrapper for PySCeS (Python Simulator for Cellular Systems)"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{name = "pbg-pysces authors", email = "noreply@example.com"}]
+dependencies = [
+    "process-bigraph",
+    "pysces>=1.2",
+    # PySCeS converts SBML → its own PSC format via libSBML.
+    "python-libsbml",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.urls]
+Homepage = "https://github.com/vivarium-collective/pbg-pysces"
+Upstream = "https://github.com/PySCeS/pysces"
+Issues = "https://github.com/vivarium-collective/pbg-pysces/issues"
+
+[tool.hatch.build.targets.wheel]
+include = ["pbg_pysces*"]

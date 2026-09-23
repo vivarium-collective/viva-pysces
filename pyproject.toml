@@ -3,12 +3,12 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "pbg-pysces"
+name = "viva-pysces"
 version = "0.1.0"
 description = "Process-bigraph wrapper for PySCeS (Python Simulator for Cellular Systems)"
 readme = "README.md"
 requires-python = ">=3.10"
-authors = [{name = "pbg-pysces authors", email = "noreply@example.com"}]
+authors = [{name = "viva-pysces authors", email = "noreply@example.com"}]
 dependencies = [
     "process-bigraph",
     "pysces>=1.2",
@@ -20,9 +20,9 @@ dependencies = [
 test = ["pytest"]
 
 [project.urls]
-Homepage = "https://github.com/vivarium-collective/pbg-pysces"
+Homepage = "https://github.com/vivarium-collective/viva-pysces"
 Upstream = "https://github.com/PySCeS/pysces"
-Issues = "https://github.com/vivarium-collective/pbg-pysces/issues"
+Issues = "https://github.com/vivarium-collective/viva-pysces/issues"
 
 [tool.hatch.build.targets.wheel]
-include = ["pbg_pysces*"]
+include = ["viva_pysces*"]

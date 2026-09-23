@@ -11,7 +11,7 @@ pytest.importorskip("pysces")
 
 from process_bigraph import allocate_core
 
-from pbg_pysces.processes import PyscesSteadyStateStep, PyscesUTCStep
+from viva_pysces.processes import PyscesSteadyStateStep, PyscesUTCStep
 
 # A minimal irreversible decay A -> B, k=1.0, A(0)=10, B(0)=0.
 _SBML = textwrap.dedent(
@@ -59,7 +59,7 @@ def test_utc_step_shape_and_decay(sbml_file, tmp_path, monkeypatch):
     # Keep the conversion cache inside the test's tmp dir.
     monkeypatch.setenv("PBG_PYSCES_CACHE", str(tmp_path / "cache"))
     import importlib
-    import pbg_pysces.processes as proc
+    import viva_pysces.processes as proc
     importlib.reload(proc)
 
     step = proc.PyscesUTCStep({}, core=allocate_core())
@@ -83,7 +83,7 @@ def test_utc_step_shape_and_decay(sbml_file, tmp_path, monkeypatch):
 def test_steady_state_step(sbml_file, tmp_path, monkeypatch):
     monkeypatch.setenv("PBG_PYSCES_CACHE", str(tmp_path / "cache"))
     import importlib
-    import pbg_pysces.processes as proc
+    import viva_pysces.processes as proc
     importlib.reload(proc)
 
     step = proc.PyscesSteadyStateStep({}, core=allocate_core())

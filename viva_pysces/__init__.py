@@ -1,6 +1,6 @@
 """process-bigraph wrapper for PySCeS (Python Simulator for Cellular Systems)."""
 
-from pbg_pysces.processes import (
+from viva_pysces.processes import (
     PyscesSteadyStateStep,
     PyscesUTCProcess,
     PyscesUTCStep,

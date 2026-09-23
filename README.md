@@ -1,4 +1,4 @@
-# pbg-pysces
+# viva-pysces
 
 Process-bigraph wrapper for [PySCeS](https://github.com/PySCeS/pysces) (the
 Python Simulator for Cellular Systems).

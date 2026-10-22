@@ -17,6 +17,14 @@ comparison contract:
 :class:`PyscesUTCProcess` is a thin time-driven convenience Process for the
 single-process composite; the comparison harness uses the Steps.
 
+Stiff models: PySCeS' default LSODA integrator fails on stiff systems by
+returning an all-NaN trajectory (not by raising). The uniform-time-course path
+detects such an all-non-finite result and, when CVODE (Assimulo/SUNDIALS) is
+available, retries once with ``mode_integrator = 'CVODE'``. Non-stiff models
+keep the fast LSODA path untouched. If no integrator yields a finite trajectory
+the Step raises instead of emitting an all-NaN "success", so callers record an
+honest failure.
+
 Caveat: PySCeS ignores SBML *events* unless Assimulo is installed (it falls back
 to LSODA). Event-driven models will therefore differ from event-aware engines.
 """
@@ -59,6 +67,92 @@ def _validate_n_points(n: Any) -> int:
     if n < 2:
         raise ValueError(f"PyscesUTCStep: n_points must be >= 2, got {n}")
     return n
+
+
+def _assimulo_status() -> tuple[bool, str]:
+    """Return ``(have_cvode, detail)`` for PySCeS' optional CVODE backend.
+
+    CVODE (a stiff BDF solver) is only available when ``assimulo``/SUNDIALS is
+    importable; PySCeS records this at import time on ``PyscesModel``. When it is
+    missing, ``detail`` carries PySCeS' own load error so callers can report it
+    honestly instead of silently falling back to LSODA.
+    """
+    try:
+        import pysces.PyscesModel as _pm
+
+        have = bool(getattr(_pm, "_HAVE_ASSIMULO", False))
+        detail = str(getattr(_pm, "_ASSIMULO_LOAD_ERROR", "") or "")
+        return have, detail
+    except Exception as exc:  # pragma: no cover - pysces import issues
+        return False, f"{type(exc).__name__}: {exc}"
+
+
+def _species_all_nonfinite(arr: Any) -> bool:
+    """True when the species block of a PySCeS sim array has no finite value.
+
+    PySCeS' default LSODA integrator fails on stiff models by returning an
+    all-NaN (occasionally all-inf) trajectory rather than raising — the array
+    is shaped ``[time, species...]`` with the first column the time points. A
+    trajectory with no finite species value anywhere is unusable, which is the
+    signal to retry with CVODE and, failing that, to report failure.
+    """
+    import numpy as np
+
+    a = np.asarray(arr, dtype=float)
+    if a.size == 0 or a.ndim != 2 or a.shape[1] < 2:
+        return True
+    return not bool(np.isfinite(a[:, 1:]).any())
+
+
+def _simulate_utc(model, end: float, points: int, quiet: bool):
+    """Integrate a uniform time course, retrying stiff failures with CVODE.
+
+    Runs the model's default integrator (LSODA) first so non-stiff models keep
+    their fast path unchanged. If that produces an all-non-finite trajectory (or
+    raises), and CVODE is available, switches ``mode_integrator`` to CVODE and
+    retries once. Returns ``(arr, labels, integrator_used)``.
+
+    Raises :class:`RuntimeError` if no integrator produces a finite trajectory,
+    so callers surface an honest failure instead of an all-NaN "success".
+    """
+    def _run():
+        with _maybe_quiet(quiet):
+            model.doSim(end=end, points=points)
+            arr, labels = model.data_sim.getSpecies(lbls=True)
+        return arr, labels
+
+    start_integrator = str(getattr(model, "mode_integrator", "LSODA") or "LSODA")
+    last_err: Exception | None = None
+    try:
+        arr, labels = _run()
+        if not _species_all_nonfinite(arr):
+            return arr, labels, start_integrator
+        last_err = RuntimeError(
+            f"{start_integrator} produced an all-non-finite trajectory"
+        )
+    except Exception as exc:
+        last_err = exc
+
+    have_cvode, detail = _assimulo_status()
+    if have_cvode and start_integrator.upper() != "CVODE":
+        try:
+            model.mode_integrator = "CVODE"
+            arr, labels = _run()
+            if not _species_all_nonfinite(arr):
+                return arr, labels, "CVODE"
+            last_err = RuntimeError("CVODE produced an all-non-finite trajectory")
+        except Exception as exc:
+            last_err = exc
+
+    hint = (
+        "CVODE unavailable (assimulo/SUNDIALS not importable: "
+        f"{detail or 'unknown'})"
+        if not have_cvode
+        else "CVODE also failed"
+    )
+    raise RuntimeError(
+        f"PySCeS produced no finite trajectory; {hint}. Last error: {last_err!r}"
+    )
 
 
 def _load_model(sbml_path: str, quiet: bool = True):
@@ -137,9 +231,10 @@ class PyscesUTCStep(Step):
         horizon = float(state["time"])
 
         model = _load_model(state["model_source"], quiet=quiet)
-        with _maybe_quiet(quiet):
-            model.doSim(end=horizon, points=n_points)
-            arr, labels = model.data_sim.getSpecies(lbls=True)
+        # LSODA first (fast path); retry stiff all-NaN failures with CVODE and,
+        # if nothing yields finite dynamics, raise so the result is recorded as
+        # a failure rather than an all-NaN "ok" leaf.
+        arr, labels, _integrator = _simulate_utc(model, horizon, n_points, quiet)
 
         # labels[0] == "Time"; remaining are species ids.
         columns = [str(c) for c in labels[1:]]
@@ -245,9 +340,9 @@ class PyscesUTCProcess(Process):
         self._build()
         self._elapsed += float(interval)
         quiet = bool(self.config.get("quiet", True))
-        with _maybe_quiet(quiet):
-            self._model.doSim(end=self._elapsed, points=2)
-            arr, labels = self._model.data_sim.getSpecies(lbls=True)
+        arr, labels, _integrator = _simulate_utc(
+            self._model, self._elapsed, 2, quiet
+        )
         cols = [str(c) for c in labels[1:]]
         last = arr[-1]
         species = {cols[i]: float(last[i + 1]) for i in range(len(cols))}

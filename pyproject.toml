@@ -26,5 +26,9 @@ Homepage = "https://github.com/vivarium-collective/viva-pysces"
 Upstream = "https://github.com/PySCeS/pysces"
 Issues = "https://github.com/vivarium-collective/viva-pysces/issues"
 
+[tool.hatch.metadata]
+# engine-core is consumed as a git dependency (not yet on PyPI).
+allow-direct-references = true
+
 [tool.hatch.build.targets.wheel]
 include = ["viva_pysces*"]

@@ -6,8 +6,9 @@ format, so SBML is converted to PSC on first use (via libSBML) and the compiled
 model is cached on disk, content-addressed by SBML source — repeated loads of
 the same model are fast.
 
-Two one-shot Steps share the load path and speak the canonical multi-simulator
-comparison contract:
+Two one-shot Steps share the load path and implement the shared ``engine_core``
+uniform-time-course / steady-state contract (so every SBML/ODE backend declares
+the same ports and emits the same result shape):
 
 * :class:`PyscesUTCStep` — uniform time course →
   ``{result: {time, columns, values}}``.
@@ -36,7 +37,9 @@ import os
 from pathlib import Path
 from typing import Any
 
-from process_bigraph import Process, Step
+from process_bigraph import Process
+
+from engine_core import SteadyStateStep, UniformTimeCourseStep
 
 #: Persistent cache for converted PSC models, content-addressed by SBML source.
 #: Override with ``PBG_PYSCES_CACHE``; defaults to ``pysces_models/`` under cwd
@@ -57,16 +60,6 @@ def _maybe_quiet(enabled: bool):
     with open(os.devnull, "w") as devnull:
         with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
             yield
-
-
-def _validate_n_points(n: Any) -> int:
-    try:
-        n = int(n)
-    except (TypeError, ValueError):
-        raise ValueError(f"PyscesUTCStep: n_points must be an integer >= 2, got {n!r}")
-    if n < 2:
-        raise ValueError(f"PyscesUTCStep: n_points must be >= 2, got {n}")
-    return n
 
 
 def _assimulo_status() -> tuple[bool, str]:
@@ -203,80 +196,55 @@ def _load_model(sbml_path: str, quiet: bool = True):
 # --------------------------------------------------------------------------- #
 
 
-class PyscesUTCStep(Step):
+class PyscesUTCStep(UniformTimeCourseStep):
     """One-shot uniform time course via PySCeS.
 
-    Runtime inputs (so a loader can feed them dynamically):
-
-    * ``model_source`` — path to an SBML file.
-    * ``time``         — integration horizon (t runs 0 → time).
-    * ``n_points``     — number of evenly-spaced output points (>= 2).
-
-    Emits the canonical ``{result: {time, columns, values}}`` trajectory, one
-    column per floating-species id. Matches the one-shot UTC contract consumed
-    by multi-simulator comparison harnesses.
+    Implements the shared ``engine_core.UniformTimeCourseStep`` contract (fixed
+    ``model_source``/``time``/``n_points`` inputs and canonical
+    ``{result: {time, columns, values}}`` output); only the PySCeS integration is
+    local. One column per floating-species id.
     """
 
-    config_schema = {"quiet": {"_type": "boolean", "_default": True}}
+    config_schema = {
+        **UniformTimeCourseStep.config_schema,
+        "quiet": {"_type": "boolean", "_default": True},
+    }
 
-    def inputs(self) -> dict[str, str]:
-        return {"model_source": "string", "time": "float", "n_points": "integer"}
-
-    def outputs(self) -> dict[str, str]:
-        return {"result": "tree"}
-
-    def update(self, state: dict[str, Any]) -> dict[str, Any]:
+    def simulate(self, model_source, time, n_points):
         quiet = bool(self.config.get("quiet", True))
-        n_points = _validate_n_points(state["n_points"])
-        horizon = float(state["time"])
-
-        model = _load_model(state["model_source"], quiet=quiet)
+        model = _load_model(model_source, quiet=quiet)
         # LSODA first (fast path); retry stiff all-NaN failures with CVODE and,
         # if nothing yields finite dynamics, raise so the result is recorded as
         # a failure rather than an all-NaN "ok" leaf.
-        arr, labels, _integrator = _simulate_utc(model, horizon, n_points, quiet)
-
+        arr, labels, _integrator = _simulate_utc(model, time, n_points, quiet)
         # labels[0] == "Time"; remaining are species ids.
         columns = [str(c) for c in labels[1:]]
-        times = [float(row[0]) for row in arr]
-        values = [[float(row[i + 1]) for i in range(len(columns))] for row in arr]
-        return {"result": {"time": times, "columns": columns, "values": values}}
+        times = [row[0] for row in arr]
+        values = [[row[i + 1] for i in range(len(columns))] for row in arr]
+        return times, columns, values
 
 
-class PyscesSteadyStateStep(Step):
+class PyscesSteadyStateStep(SteadyStateStep):
     """One-shot steady-state solve via PySCeS.
 
-    Runtime input ``model_source`` (an SBML file path). Solves for the steady
-    state and emits each floating species' steady value as
+    Implements the shared ``engine_core.SteadyStateStep`` contract: runtime input
+    ``model_source``; emits each floating species' steady value as
     ``{result: {kind: "steady_state", time: None, observables: {id: value}}}``.
     """
 
-    config_schema = {"quiet": {"_type": "boolean", "_default": True}}
+    config_schema = {
+        **SteadyStateStep.config_schema,
+        "quiet": {"_type": "boolean", "_default": True},
+    }
 
-    def inputs(self) -> dict[str, str]:
-        return {"model_source": "string"}
-
-    def outputs(self) -> dict[str, str]:
-        return {"result": "tree"}
-
-    def update(self, state: dict[str, Any]) -> dict[str, Any]:
+    def steady_state(self, model_source):
         quiet = bool(self.config.get("quiet", True))
-        model = _load_model(state["model_source"], quiet=quiet)
+        model = _load_model(model_source, quiet=quiet)
         with _maybe_quiet(quiet):
             model.doState()
             species_ids = [str(s) for s in model.species]
             ss_values = list(model.state_species)
-
-        observables = {
-            sid: float(val) for sid, val in zip(species_ids, ss_values)
-        }
-        return {
-            "result": {
-                "kind": "steady_state",
-                "time": None,
-                "observables": observables,
-            }
-        }
+        return dict(zip(species_ids, ss_values))
 
 
 # --------------------------------------------------------------------------- #

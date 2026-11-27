@@ -315,3 +315,58 @@ class PyscesUTCProcess(Process):
         last = arr[-1]
         species = {cols[i]: float(last[i + 1]) for i in range(len(cols))}
         return {"species_concentrations": species, "time": float(self._elapsed)}
+
+
+class PyscesFullReportUTCStep(UniformTimeCourseStep):
+    """One-shot full-report uniform time course via PySCeS.
+
+    Unlike :class:`PyscesUTCStep` (floating species only), this one-shot Step
+    emits the SED-ML report's full set — floating species (``getSpecies``) AND
+    reaction fluxes (``getRates``) plus each compartment's PySCeS value — keyed by
+    id, conforming to the shared ``engine_core`` uniform-time-course contract
+    (runtime ``model_source`` / ``time`` / ``n_points`` inputs → canonical
+    ``{result: {time, columns, values}}``). PySCeS works in concentration space,
+    so compartments come out as their normalized value and fluxes in
+    concentration/time — matching the BioSimulators PySCeS reference. This
+    PySCeS-specific capability previously lived as an adapter inside viva-biomodels
+    and now belongs with the PySCeS wrapper so any consumer can reuse it. The
+    stiff LSODA→CVODE retry of :func:`_simulate_utc` is reused (honest failure on
+    an all-NaN trajectory).
+    """
+
+    config_schema = {
+        **UniformTimeCourseStep.config_schema,
+        "quiet": {"_type": "boolean", "_default": True},
+    }
+
+    def simulate(self, model_source, time, n_points):
+        import libsbml
+
+        quiet = bool(self.config.get("quiet", True))
+        model = _load_model(model_source, quiet=quiet)
+        # LSODA first; retry stiff all-NaN failures with CVODE, else raise.
+        _simulate_utc(model, float(time), n_points, quiet)
+
+        sarr, slabels = model.data_sim.getSpecies(lbls=True)   # Time + species ids
+        rarr, rlabels = model.data_sim.getRates(lbls=True)     # Time + reaction ids
+        sp_cols = [str(c) for c in slabels[1:]]
+        rx_cols = [str(c) for c in rlabels[1:]]
+
+        # Compartments: PySCeS exposes each as a model attribute (its normalized
+        # concentration-space value). Emit them so they repeat-match the pysces
+        # reference rather than a uniform SBML-size fill.
+        sd = libsbml.readSBML(model_source)
+        comp_ids = [c.getId() for c in sd.getModel().getListOfCompartments()]
+        comp_vals = {cid: float(getattr(model, cid)) for cid in comp_ids
+                     if getattr(model, cid, None) is not None}
+
+        times = [row[0] for row in sarr]
+        n_rows = len(times)
+        columns = sp_cols + rx_cols + list(comp_vals.keys())
+        values = []
+        for i in range(n_rows):
+            row = [sarr[i][j + 1] for j in range(len(sp_cols))]
+            row += [rarr[i][j + 1] for j in range(len(rx_cols))]
+            row += [comp_vals[cid] for cid in comp_vals]
+            values.append(row)
+        return times, columns, values
